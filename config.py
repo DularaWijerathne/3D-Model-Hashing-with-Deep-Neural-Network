@@ -24,3 +24,6 @@ QUANTIZATION_WEIGHT = 0.2  # Weight for quantization loss
 
 # Evaluation parameters
 RETRIEVAL_K = 100  # Top-k for precision and recall computation
+
+# Thresholders
+SIMILARITY_THRESHOLDER = 0.5

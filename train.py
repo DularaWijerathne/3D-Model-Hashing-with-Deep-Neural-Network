@@ -5,7 +5,7 @@ from tensorflow import keras
 import matplotlib.pyplot as plt
 import os
 
-from config import BATCH_SIZE, EPOCHS, LEARNING_RATE, GPU_MEMORY_LIMIT, USE_MIXED_PRECISION, HASH_BIT_SIZE
+from config import BATCH_SIZE, EPOCHS, LEARNING_RATE, GPU_MEMORY_LIMIT, USE_MIXED_PRECISION, HASH_BIT_SIZE, SIMILARITY_THRESHOLDER
 from data.data_loader import load_data, process_data, create_data_generators
 from data.preprocessing import prepare_data_for_training
 from models.hashing_model import create_hashing_model
@@ -100,7 +100,7 @@ def train_hashing_model(train_data, test_data, output_path):
     model.compile(
         optimizer=optimizer,
         loss=HashingLoss(batch_size=BATCH_SIZE),
-        metrics=[HashingAccuracy(hash_bit_size=HASH_BIT_SIZE)]
+        metrics=[HashingAccuracy(hash_bit_size=HASH_BIT_SIZE, similarity_threshold=SIMILARITY_THRESHOLDER)]
     )
 
     # Model summary
@@ -131,7 +131,7 @@ def train_hashing_model(train_data, test_data, output_path):
             factor=0.5,
             patience=5
         ),
-        HashingMetrics(val_pairs, test_rotations=True)
+        HashingMetrics(val_pairs, test_rotations=True, similarity_threshold=SIMILARITY_THRESHOLDER)
     ]
 
     # Training configuration
@@ -210,47 +210,50 @@ def train_hashing_model(train_data, test_data, output_path):
     if metrics_callback and metrics_callback.metrics_history['epoch']:
         plt.figure(figsize=(15, 10))
         
-        # Plot mAP
+        # Plot Precision
         plt.subplot(2, 2, 1)
         plt.plot(metrics_callback.metrics_history['epoch'], 
-                 metrics_callback.metrics_history['mAP'], 
-                 'o-', label='mAP')
-        if metrics_callback.metrics_history.get('rotation_mAP'):
-            plt.plot(metrics_callback.metrics_history['epoch'], 
-                     metrics_callback.metrics_history['rotation_mAP'], 
-                     'o--', label='Rotation mAP')
-        plt.title('Mean Average Precision')
-        plt.xlabel('Epoch')
-        plt.ylabel('mAP')
-        plt.legend()
-        plt.grid(True, linestyle='--', alpha=0.6)
-        
-        # Plot Precision@k
-        plt.subplot(2, 2, 2)
-        plt.plot(metrics_callback.metrics_history['epoch'], 
-                 metrics_callback.metrics_history['precision_at_k'], 
-                 'o-', label='Precision@100')
+                 metrics_callback.metrics_history['precision'], 
+                 'o-', label='Precision')
         if metrics_callback.metrics_history.get('rotation_precision'):
             plt.plot(metrics_callback.metrics_history['epoch'], 
                      metrics_callback.metrics_history['rotation_precision'], 
-                     'o--', label='Rotation Precision@100')
-        plt.title('Precision@100')
+                     'o--', label='Rotation Precision')
+        plt.title('Precision')
         plt.xlabel('Epoch')
         plt.ylabel('Precision')
         plt.legend()
         plt.grid(True, linestyle='--', alpha=0.6)
         
-        # Plot Recall@k if available
-        if 'recall_at_k' in metrics_callback.metrics_history:
-            plt.subplot(2, 2, 3)
+        # Plot Recall
+        plt.subplot(2, 2, 2)
+        plt.plot(metrics_callback.metrics_history['epoch'], 
+                 metrics_callback.metrics_history['recall'], 
+                 'o-', label='Recall')
+        if metrics_callback.metrics_history.get('rotation_recall'):
             plt.plot(metrics_callback.metrics_history['epoch'], 
-                     metrics_callback.metrics_history['recall_at_k'], 
-                     'o-', label='Recall@100')
-            plt.title('Recall@100')
-            plt.xlabel('Epoch')
-            plt.ylabel('Recall')
-            plt.legend()
-            plt.grid(True, linestyle='--', alpha=0.6)
+                     metrics_callback.metrics_history['rotation_recall'], 
+                     'o--', label='Rotation Recall')
+        plt.title('Recall')
+        plt.xlabel('Epoch')
+        plt.ylabel('Recall')
+        plt.legend()
+        plt.grid(True, linestyle='--', alpha=0.6)
+        
+        # Plot F1 Score
+        plt.subplot(2, 2, 3)
+        plt.plot(metrics_callback.metrics_history['epoch'], 
+                 metrics_callback.metrics_history['f1_score'], 
+                 'o-', label='F1 Score')
+        if metrics_callback.metrics_history.get('rotation_f1'):
+            plt.plot(metrics_callback.metrics_history['epoch'], 
+                     metrics_callback.metrics_history['rotation_f1'], 
+                     'o--', label='Rotation F1')
+        plt.title('F1 Score')
+        plt.xlabel('Epoch')
+        plt.ylabel('F1 Score')
+        plt.legend()
+        plt.grid(True, linestyle='--', alpha=0.6)
         
         # Plot Invariance Score if available
         if 'invariance_score' in metrics_callback.metrics_history:
@@ -266,7 +269,7 @@ def train_hashing_model(train_data, test_data, output_path):
             plt.grid(True, linestyle='--', alpha=0.6)
         
         plt.tight_layout()
-        plt.savefig(os.path.join(output_path, "retrieval_metrics.png"))
+        plt.savefig(os.path.join(output_path, "threshold_metrics.png"))
         plt.close()
 
     # Evaluate on test set
@@ -281,14 +284,15 @@ def train_hashing_model(train_data, test_data, output_path):
     metrics = HashingMetrics(test_pairs[:500],  # Use a subset for evaluation
                            feature_extractor=inference.feature_extractor,
                            hash_layer=inference.hash_layer,
-                           test_rotations=True)
+                           test_rotations=True,
+                           similarity_threshold=SIMILARITY_THRESHOLDER)
 
-    mAP, precision_at_k, recall_at_k = metrics.compute_retrieval_metrics()
-    print(f"Test mAP: {mAP:.4f}, Test Precision@100: {precision_at_k:.4f}, Test Recall@100: {recall_at_k:.4f}")
+    precision, recall, f1_score = metrics.compute_metrics()
+    print(f"Test Precision: {precision:.4f}, Test Recall: {recall:.4f}, Test F1 Score: {f1_score:.4f}")
     
     # Test rotation invariance
-    rotation_mAP, rotation_precision, invariance_score = metrics.test_rotation_invariance()
-    print(f"Rotation test mAP: {rotation_mAP:.4f}, Rotation test Precision@100: {rotation_precision:.4f}")
+    rot_precision, rot_recall, rot_f1, invariance_score = metrics.test_rotation_invariance()
+    print(f"Rotation test Precision: {rot_precision:.4f}, Rotation test Recall: {rot_recall:.4f}, Rotation test F1: {rot_f1:.4f}")
     print(f"Rotation invariance score: {invariance_score:.2f} (closer to 1.0 is better)")
 
     return model, history

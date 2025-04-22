@@ -10,10 +10,10 @@ class HashingAccuracy(tf.keras.metrics.Metric):
     Custom accuracy metric for hashing models that properly measures the similarity
     between hash codes and compares with ground truth labels.
     """
-    def __init__(self, hash_bit_size, threshold=0.5, name='hashing_accuracy', **kwargs):
+    def __init__(self, hash_bit_size, similarity_threshold, name='hashing_accuracy', **kwargs):
         super().__init__(name=name, **kwargs)
         self.hash_bit_size = hash_bit_size
-        self.threshold = threshold
+        self.threshold = similarity_threshold
         self.true_positives = self.add_weight(name='tp', initializer='zeros')
         self.false_positives = self.add_weight(name='fp', initializer='zeros')
         self.true_negatives = self.add_weight(name='tn', initializer='zeros')
@@ -71,12 +71,10 @@ class HashingAccuracy(tf.keras.metrics.Metric):
 class HashingMetrics(keras.callbacks.Callback):
     """
     Enhanced callback to compute hashing performance metrics during training
-    - Adds rotation invariance testing
-    - Improved mAP calculation
-    - More detailed logging of retrieval metrics
+    using threshold-based approach similar to HashingAccuracy
     """
 
-    def __init__(self, val_pairs, feature_extractor=None, hash_layer=None, eval_frequency=5,
+    def __init__(self, val_pairs, similarity_threshold, feature_extractor=None, hash_layer=None, eval_frequency=5,
                 test_rotations=True):
         super().__init__()
         self.val_pairs = val_pairs
@@ -84,14 +82,16 @@ class HashingMetrics(keras.callbacks.Callback):
         self.hash_layer = hash_layer
         self.eval_frequency = eval_frequency
         self.test_rotations = test_rotations
+        self.similarity_threshold = similarity_threshold  # Threshold for similarity judgment
         self._model = None  # Use a different name for our internal reference
         self.metrics_history = {
             'epoch': [],
-            'mAP': [],
-            'precision_at_k': [],
-            'recall_at_k': [],
-            'rotation_mAP': [],
+            'precision': [],
+            'recall': [],
+            'f1_score': [],
             'rotation_precision': [],
+            'rotation_recall': [],
+            'rotation_f1': [],
             'invariance_score': []
         }
 
@@ -123,32 +123,33 @@ class HashingMetrics(keras.callbacks.Callback):
                     break
 
         # Compute metrics
-        mAP, precision_at_k, recall_at_k = self.compute_retrieval_metrics()
+        precision, recall, f1_score = self.compute_metrics()
         
         # Store results
         self.metrics_history['epoch'].append(epoch + 1)
-        self.metrics_history['mAP'].append(mAP)
-        self.metrics_history['precision_at_k'].append(precision_at_k)
-        self.metrics_history['recall_at_k'].append(recall_at_k)
+        self.metrics_history['precision'].append(precision)
+        self.metrics_history['recall'].append(recall)
+        self.metrics_history['f1_score'].append(f1_score)
         
         # Print base metrics
-        print(f"\nEpoch {epoch+1}: mAP = {mAP:.4f}, Top_100_Precision = {precision_at_k:.4f}, Top_100_Recall = {recall_at_k:.4f}")
+        print(f"\nEpoch {epoch+1}: Precision = {precision:.4f}, Recall = {recall:.4f}, F1 = {f1_score:.4f}")
         
         # Test rotation invariance if enabled
         if self.test_rotations:
-            rotation_mAP, rotation_precision, invariance_score = self.test_rotation_invariance()
-            self.metrics_history['rotation_mAP'].append(rotation_mAP)
-            self.metrics_history['rotation_precision'].append(rotation_precision)
+            rot_precision, rot_recall, rot_f1, invariance_score = self.test_rotation_invariance()
+            self.metrics_history['rotation_precision'].append(rot_precision)
+            self.metrics_history['rotation_recall'].append(rot_recall)
+            self.metrics_history['rotation_f1'].append(rot_f1)
             self.metrics_history['invariance_score'].append(invariance_score)
             
-            print(f"Rotation invariance test: mAP = {rotation_mAP:.4f}, Precision = {rotation_precision:.4f}")
+            print(f"Rotation test: Precision = {rot_precision:.4f}, Recall = {rot_recall:.4f}, F1 = {rot_f1:.4f}")
             print(f"Invariance score: {invariance_score:.2f} (closer to 1.0 is better)\n")
         
         # Add metrics to logs
         if logs is not None:
-            logs['val_mAP'] = mAP
-            logs['val_precision'] = precision_at_k
-            logs['val_recall'] = recall_at_k
+            logs['val_precision'] = precision
+            logs['val_recall'] = recall
+            logs['val_f1_score'] = f1_score
             if self.test_rotations:
                 logs['rotation_invariance'] = invariance_score
 
@@ -180,203 +181,150 @@ class HashingMetrics(keras.callbacks.Callback):
 
         return binary_hash[0]  # Remove batch dimension
 
-    def compute_retrieval_metrics(self):
-        """Compute mAP and Precision@k for retrieval evaluation"""
+    def compute_hash_similarity(self, hash1, hash2):
+        """
+        Compute similarity between two hash codes based on normalized dot product,
+        scaled to [0, 1] range
+        """
+        # Ensure hash codes are in correct format
+        hash1 = np.asarray(hash1, dtype=np.float32)
+        hash2 = np.asarray(hash2, dtype=np.float32)
+        
+        # Convert from binary (0/1) to bipolar (-1/+1) if needed
+        if np.all((hash1 == 0) | (hash1 == 1)):
+            hash1 = 2 * hash1 - 1  # Convert 0/1 to -1/+1
+        if np.all((hash2 == 0) | (hash2 == 1)):
+            hash2 = 2 * hash2 - 1  # Convert 0/1 to -1/+1
+            
+        # Normalize hash codes
+        norm1 = np.linalg.norm(hash1) + 1e-8
+        norm2 = np.linalg.norm(hash2) + 1e-8
+        hash1_norm = hash1 / norm1
+        hash2_norm = hash2 / norm2
+        
+        # Compute dot product (cosine similarity since vectors are normalized)
+        # Range: [-1, 1]
+        dot_product = np.sum(hash1_norm * hash2_norm)
+        
+        # Scale to [0, 1] range
+        similarity = (dot_product + 1) / 2
+        
+        return similarity
+
+    def compute_metrics(self):
+        """
+        Compute precision and recall using a threshold-based approach,
+        similar to HashingAccuracy
+        """
         # Extract a subset of validation data for evaluation
         eval_size = min(500, len(self.val_pairs))  # Use at most 500 samples for evaluation
         eval_pairs = self.val_pairs[:eval_size]
 
-        # Compute hash codes for all point clouds
-        queries = []
-        database = []
-        relevance = []
+        # Initialize confusion matrix counters
+        true_positives = 0
+        false_positives = 0
+        false_negatives = 0
+        true_negatives = 0
 
-        for i, (pc_pair, label) in enumerate(eval_pairs):
-            query_hash = self.compute_binary_hash(pc_pair[0])
-            db_hash = self.compute_binary_hash(pc_pair[1])
-
-            queries.append(query_hash)
-            database.append(db_hash)
-            relevance.append(label)
-
-        # Convert to arrays
-        queries = np.array(queries)
-        database = np.array(database)
-        relevance = np.array(relevance)
-
-        # Compute Hamming distances between queries and database items
-        distances = []
-        for query in queries:
-            # Compute Hamming distance (count of differing bits)
-            dist = np.sum(query != database, axis=1)
-            distances.append(dist)
-
-        distances = np.array(distances)
-
-        # Compute mAP
-        mAP = self.compute_mAP(distances, relevance)
-
-        # Compute Precision@k and Recall@k
-        k = min(100, len(database))
-        precision = self.compute_precision_at_k(distances, relevance, k)
-        recall = self.compute_recall_at_k(distances, relevance, k)
-
-        return mAP, precision, recall
+        # Process each pair
+        for pc_pair, label in eval_pairs:
+            # Compute hash codes
+            hash1 = self.compute_binary_hash(pc_pair[0])
+            hash2 = self.compute_binary_hash(pc_pair[1])
+            
+            # Compute similarity
+            similarity = self.compute_hash_similarity(hash1, hash2)
+            
+            # Make binary prediction based on threshold
+            prediction = 1 if similarity > self.similarity_threshold else 0
+            
+            # Update confusion matrix
+            if prediction == 1 and label == 1:
+                true_positives += 1
+            elif prediction == 1 and label == 0:
+                false_positives += 1
+            elif prediction == 0 and label == 1:
+                false_negatives += 1
+            else:  # prediction == 0 and label == 0
+                true_negatives += 1
+        
+        # Calculate precision and recall
+        precision = true_positives / (true_positives + false_positives + 1e-8)
+        recall = true_positives / (true_positives + false_negatives + 1e-8)
+        
+        # Calculate F1 score
+        f1_score = 2 * precision * recall / (precision + recall + 1e-8)
+        
+        return precision, recall, f1_score
 
     def test_rotation_invariance(self):
-        """Test how well the model handles rotated point clouds"""
+        """
+        Test rotation invariance using threshold-based metrics
+        """
         # Use a smaller subset for rotation testing to save time
         test_size = min(100, len(self.val_pairs))
         test_pairs = self.val_pairs[:test_size]
         
-        # Create rotated versions of the test pairs
-        rotated_test_pairs = []
-        for (point_clouds, label) in test_pairs:
-            # Apply rotation only to the first point cloud
-            rotated_pc1 = augment_point_cloud(point_clouds[0], rotate=True, jitter_sigma=0)
-            rotated_test_pairs.append(([rotated_pc1, point_clouds[1]], label))
+        # Initialize counters for original and rotated versions
+        orig_tp = 0
+        orig_fp = 0
+        orig_fn = 0
+        orig_tn = 0
         
-        # Compute hash codes for the rotated and original point clouds
-        original_queries = []
-        rotated_queries = []
-        database = []
-        relevance = []
+        rot_tp = 0
+        rot_fp = 0
+        rot_fn = 0
+        rot_tn = 0
         
-        for i, ((orig_pair, _), (rot_pair, label)) in enumerate(zip(test_pairs, rotated_test_pairs)):
-            original_hash = self.compute_binary_hash(orig_pair[0])
-            rotated_hash = self.compute_binary_hash(rot_pair[0])
-            db_hash = self.compute_binary_hash(orig_pair[1])
+        # Process each pair
+        for pc_pair, label in test_pairs:
+            # Create rotated version of first point cloud
+            rotated_pc1 = augment_point_cloud(pc_pair[0], rotate=True, jitter_sigma=0)
             
-            original_queries.append(original_hash)
-            rotated_queries.append(rotated_hash)
-            database.append(db_hash)
-            relevance.append(label)
-        
-        # Convert to arrays
-        original_queries = np.array(original_queries)
-        rotated_queries = np.array(rotated_queries)
-        database = np.array(database)
-        relevance = np.array(relevance)
-        
-        # Compute distances for original and rotated queries
-        original_distances = []
-        rotated_distances = []
-        
-        for orig_query, rot_query in zip(original_queries, rotated_queries):
-            # Compute Hamming distances
-            orig_dist = np.sum(orig_query != database, axis=1)
-            rot_dist = np.sum(rot_query != database, axis=1)
+            # Compute hash codes
+            orig_hash1 = self.compute_binary_hash(pc_pair[0])
+            rot_hash1 = self.compute_binary_hash(rotated_pc1)
+            hash2 = self.compute_binary_hash(pc_pair[1])
             
-            original_distances.append(orig_dist)
-            rotated_distances.append(rot_dist)
-        
-        original_distances = np.array(original_distances)
-        rotated_distances = np.array(rotated_distances)
-        
-        # Compute metrics for original and rotated queries
-        original_mAP = self.compute_mAP(original_distances, relevance)
-        rotated_mAP = self.compute_mAP(rotated_distances, relevance)
-        
-        k = min(100, len(database))
-        original_precision = self.compute_precision_at_k(original_distances, relevance, k)
-        rotated_precision = self.compute_precision_at_k(rotated_distances, relevance, k)
-        
-        # Compute invariance score (ratio of rotated to original performance)
-        invariance_score = rotated_mAP / original_mAP if original_mAP > 0 else 0.0
-        
-        return rotated_mAP, rotated_precision, invariance_score
-
-    def compute_mAP(self, distances, relevance):
-        """
-        Compute mean Average Precision with improved handling of edge cases
-        """
-        num_queries = distances.shape[0]
-        if num_queries == 0:
-            return 0.0
-
-        # For each query, sort database by distance
-        ap_sum = 0.0
-        valid_queries = 0
-
-        for i in range(num_queries):
-            # Sort database by distance to query (ascending order for Hamming distance)
-            sorted_indices = np.argsort(distances[i])
-            sorted_relevance = relevance[sorted_indices]
-
-            # Find positions of relevant items
-            relevant_indices = np.where(sorted_relevance == 1)[0]
-
-            if len(relevant_indices) == 0:
-                continue  # Skip queries with no relevant items
-
-            valid_queries += 1
+            # Compute similarities
+            orig_similarity = self.compute_hash_similarity(orig_hash1, hash2)
+            rot_similarity = self.compute_hash_similarity(rot_hash1, hash2)
             
-            # Compute precision at each relevant item position
-            precisions = []
-            for j, idx in enumerate(relevant_indices):
-                # Precision = (# relevant items up to position) / (position)
-                precision = np.sum(sorted_relevance[:idx + 1]) / (idx + 1)
-                precisions.append(precision)
-
-            # Average precision for this query
-            ap = np.mean(precisions)
-            ap_sum += ap
-
-        # Mean Average Precision (avoid division by zero)
-        mAP = ap_sum / valid_queries if valid_queries > 0 else 0.0
-        return mAP
-
-    def compute_precision_at_k(self, distances, relevance, k):
-        """
-        Compute Precision@k (proportion of relevant items in top-k)
-        """
-        num_queries = distances.shape[0]
-        if num_queries == 0 or k <= 0:
-            return 0.0
-
-        precision_sum = 0.0
-
-        for i in range(num_queries):
-            # Sort database by distance to query (ascending for Hamming)
-            sorted_indices = np.argsort(distances[i])
-            # Take top k items
-            top_k_indices = sorted_indices[:k]
-            # Compute precision (proportion of relevant items)
-            precision = np.sum(relevance[top_k_indices]) / k
-            precision_sum += precision
-
-        # Average precision@k across all queries
-        avg_precision = precision_sum / num_queries
-        return avg_precision
-
-    def compute_recall_at_k(self, distances, relevance, k):
-        """
-        Compute Recall@k (proportion of all relevant items found in top-k)
-        """
-        num_queries = distances.shape[0]
-        if num_queries == 0 or k <= 0:
-            return 0.0
-
-        recall_sum = 0.0
-        valid_queries = 0
-
-        for i in range(num_queries):
-            # Sort database by distance to query (ascending for Hamming)
-            sorted_indices = np.argsort(distances[i])
-            # Take top k items
-            top_k_indices = sorted_indices[:k]
+            # Make predictions
+            orig_prediction = 1 if orig_similarity > self.similarity_threshold else 0
+            rot_prediction = 1 if rot_similarity > self.similarity_threshold else 0
             
-            # Count all relevant items for this query
-            relevant_count = np.sum(relevance == 1)
-            if relevant_count == 0:
-                continue  # Skip queries with no relevant items
+            # Update original confusion matrix
+            if orig_prediction == 1 and label == 1:
+                orig_tp += 1
+            elif orig_prediction == 1 and label == 0:
+                orig_fp += 1
+            elif orig_prediction == 0 and label == 1:
+                orig_fn += 1
+            else:  # orig_prediction == 0 and label == 0
+                orig_tn += 1
                 
-            valid_queries += 1
-            
-            # Compute recall (proportion of all relevant items found)
-            recall = np.sum(relevance[top_k_indices]) / relevant_count
-            recall_sum += recall
-
-        # Average recall@k across all valid queries
-        avg_recall = recall_sum / valid_queries if valid_queries > 0 else 0.0
-        return avg_recall
+            # Update rotated confusion matrix
+            if rot_prediction == 1 and label == 1:
+                rot_tp += 1
+            elif rot_prediction == 1 and label == 0:
+                rot_fp += 1
+            elif rot_prediction == 0 and label == 1:
+                rot_fn += 1
+            else:  # rot_prediction == 0 and label == 0
+                rot_tn += 1
+        
+        # Calculate metrics for original
+        orig_precision = orig_tp / (orig_tp + orig_fp + 1e-8)
+        orig_recall = orig_tp / (orig_tp + orig_fn + 1e-8)
+        orig_f1 = 2 * orig_precision * orig_recall / (orig_precision + orig_recall + 1e-8)
+        
+        # Calculate metrics for rotated
+        rot_precision = rot_tp / (rot_tp + rot_fp + 1e-8)
+        rot_recall = rot_tp / (rot_tp + rot_fn + 1e-8)
+        rot_f1 = 2 * rot_precision * rot_recall / (rot_precision + rot_recall + 1e-8)
+        
+        # Calculate invariance score as ratio of F1 scores
+        invariance_score = rot_f1 / orig_f1 if orig_f1 > 0 else 0.0
+        
+        return rot_precision, rot_recall, rot_f1, invariance_score
