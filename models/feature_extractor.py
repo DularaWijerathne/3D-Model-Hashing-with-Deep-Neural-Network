@@ -6,26 +6,26 @@ from config import POINT_CLOUD_SIZE, POINT_FEATURES
 
 
 def self_attention_module(x, num_heads=4):
-    """
-    Self-attention module for point cloud features
-    """
-    # Multi-head self-attention
+    # Normalize input to attention (critical!)
+    x_norm = layers.LayerNormalization()(x)
+    
+    # Scale attention logits by sqrt(d_k) to prevent saturation
     attention_output = layers.MultiHeadAttention(
         num_heads=num_heads,
-        key_dim=x.shape[-1] // num_heads
-    )(x, x)
+        key_dim=x.shape[-1] // num_heads,
+    )(x_norm, x_norm)
     
-    # Add & Norm (residual connection and layer normalization)
+    # Residual + Norm
     x = layers.Add()([x, attention_output])
     x = layers.LayerNormalization()(x)
     
-    # Feed Forward Network
-    ffn = layers.Dense(x.shape[-1] * 2, activation='relu')(x)
+    # FFN with normalization
+    ffn = layers.LayerNormalization()(x)
+    ffn = layers.Dense(x.shape[-1] * 2, activation='relu')(ffn)
     ffn = layers.Dense(x.shape[-1])(ffn)
-    
-    # Add & Norm
+
+    # Add
     x = layers.Add()([x, ffn])
-    x = layers.LayerNormalization()(x)
     
     return x
 
@@ -44,15 +44,15 @@ def create_point_cloud_feature_extractor():
     x = layers.Conv1D(128, 1, activation='relu')(x)
     x = layers.BatchNormalization()(x)
     
-    # Add self-attention after initial feature extraction
-    x = self_attention_module(x, num_heads=4)
+    # # Add self-attention after initial feature extraction
+    # x = self_attention_module(x, num_heads=4)
     
     # Continue with deeper feature extraction
     x = layers.Conv1D(256, 1, activation='relu')(x)
     x = layers.BatchNormalization()(x)
     
-    # Second self-attention module
-    x = self_attention_module(x, num_heads=8)
+    # # Second self-attention module
+    # x = self_attention_module(x, num_heads=8)
     
     # Final feature extraction
     x = layers.Conv1D(512, 1, activation='relu')(x)

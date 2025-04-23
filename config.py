@@ -5,12 +5,14 @@ POINT_FEATURES = 3  # X, Y, Z coordinates
 
 # Training parameters
 BATCH_SIZE = 32
-EPOCHS = 5
+EPOCHS = 100
 LEARNING_RATE = 0.001
 MARGIN = 0.3  # Margin for contrastive loss
 
 # GPU configuration
-GPU_MEMORY_LIMIT = None  # Set to integer value in MB to limit GPU memory, or None to use memory growth
+GPU_MEMORY_LIMIT = (
+    None  # Set to integer value in MB to limit GPU memory, or None to use memory growth
+)
 USE_MIXED_PRECISION = True  # Enable mixed precision training for faster computation
 
 # Data augmentation parameters
@@ -26,4 +28,4 @@ QUANTIZATION_WEIGHT = 0.2  # Weight for quantization loss
 RETRIEVAL_K = 100  # Top-k for precision and recall computation
 
 # Thresholders
-SIMILARITY_THRESHOLDER = 0.5
+SIMILARITY_THRESHOLD = 0.85

@@ -11,14 +11,20 @@ def load_data(file_path, dataset_type, point_count=1000):
     """
     Load 3D models from filesystem and convert to point clouds
     """
-    if dataset_type not in {'train', 'test'}:
+    if dataset_type not in {"train", "test"}:
         raise ValueError("dataset_type must be 'train' or 'test'")
     dataset = {}
     for idx, category in enumerate(os.listdir(file_path)):
         if os.path.isdir(os.path.join(file_path, category)):
             file_dir = os.path.join(file_path, category, dataset_type)
-            model_paths = [os.path.join(file_dir, file) for file in os.listdir(file_dir) if file.endswith(".off")]
-            model_name = [file for file in os.listdir(file_dir) if file.endswith(".off")]
+            model_paths = [
+                os.path.join(file_dir, file)
+                for file in os.listdir(file_dir)
+                if file.endswith(".off")
+            ]
+            model_name = [
+                file for file in os.listdir(file_dir) if file.endswith(".off")
+            ]
             for path in model_paths:
                 try:
                     mesh = trimesh.load_mesh(path)  # Load the 3D model
@@ -79,21 +85,24 @@ def create_data_generators(train_pairs, val_pairs, batch_size=BATCH_SIZE):
     # Define the output signature
     output_signature = (
         (
-            tf.TensorSpec(shape=(None, POINT_CLOUD_SIZE, POINT_FEATURES), dtype=tf.float32),
-            tf.TensorSpec(shape=(None, POINT_CLOUD_SIZE, POINT_FEATURES), dtype=tf.float32)
+            tf.TensorSpec(
+                shape=(None, POINT_CLOUD_SIZE, POINT_FEATURES), dtype=tf.float32
+            ),
+            tf.TensorSpec(
+                shape=(None, POINT_CLOUD_SIZE, POINT_FEATURES), dtype=tf.float32
+            ),
         ),
-        tf.TensorSpec(shape=(None,), dtype=tf.int32)
+        tf.TensorSpec(shape=(None,), dtype=tf.int32),
     )
 
     # Create TensorFlow datasets
     train_dataset = tf.data.Dataset.from_generator(
         lambda: generate_batch(train_pairs, batch_size),
-        output_signature=output_signature
+        output_signature=output_signature,
     ).prefetch(tf.data.AUTOTUNE)
 
     val_dataset = tf.data.Dataset.from_generator(
-        lambda: generate_batch(val_pairs, batch_size),
-        output_signature=output_signature
+        lambda: generate_batch(val_pairs, batch_size), output_signature=output_signature
     ).prefetch(tf.data.AUTOTUNE)
 
     train_steps = len(train_pairs) // batch_size
