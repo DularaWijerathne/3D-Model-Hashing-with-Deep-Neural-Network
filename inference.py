@@ -113,58 +113,43 @@ class HashingInference:
             if not hasattr(self, "feature_extractor") and len(self.model.layers) > 2:
                 self.feature_extractor = self.model.layers[2]
 
-            # Extract hash layer
+            # Extract hash layer - need to get both the dense layer and the binarize layer
             for layer in self.model.layers:
                 if isinstance(layer, keras.layers.Dense) and "hash_dense" in layer.name:
                     self.hash_layer = layer
                     break
 
     def compute_hash(self, point_cloud):
-        """Compute hash code for a single point cloud"""
+        """Compute binary hash code for a single point cloud"""
         # Preprocess point cloud
         processed_pc = normalize_point_cloud(point_cloud)
-
-        # Add batch dimension
         processed_pc = np.expand_dims(processed_pc, axis=0)
-
+        
         # Use GPU if available
         device = "/GPU:0" if has_gpu_for_inference else "/CPU:0"
         with tf.device(device):
-            # Extract features
-            features = self.feature_extractor.predict(processed_pc, verbose=0)
-
-            # Compute hash code
-            hash_logits = self.hash_layer(features)
-            hash_values = tf.nn.tanh(hash_logits)
-
-            # Convert to binary (0 or 1)
-            binary_hash = np.where(hash_values > 0, 1, 0).numpy()
-
-        return binary_hash[0]  # Remove batch dimension
+            # Get model output
+            dummy_pc = np.zeros_like(processed_pc)  # Create dummy pair
+            model_output = self.model.predict([{'point_cloud_a':processed_pc, 'point_cloud_b':dummy_pc}], verbose=0)
+            
+            # Get first half of output (hash for input point cloud)
+            continuous_hash = model_output[0, :HASH_BIT_SIZE]
+            
+            # Binarize (sign function)
+            binary_hash = (continuous_hash > 0).astype(int)
+            
+        return binary_hash
 
     def compute_similarity(self, hash1, hash2):
-        """Compute similarity between two hash codes"""
-        # Hamming distance
-        hamming_dist = np.sum(hash1 != hash2)
-
-        # Normalized similarity (1 - normalized Hamming distance)
-        similarity = 1 - (hamming_dist / HASH_BIT_SIZE)
-
+        """Compute similarity between two binary hash codes"""
+        if hash1.shape != hash2.shape:
+            raise ValueError("Arrays must have the same shape")
+        similarity = np.mean(hash1 == hash2)
         return similarity
 
-    def retrieve_similar_models(
-        self, query_point_cloud, database_point_clouds, top_k=10
-    ):
+    def retrieve_similar_models(self, query_point_cloud, database_point_clouds):
         """
-        Retrieve top-k similar models from a database
-
-        Parameters:
-        query_point_cloud: Point cloud to query
-        database_point_clouds: Dictionary of {model_name: point_cloud}
-        top_k: Number of similar models to retrieve
-
-        Returns:
-        List of (model_name, similarity_score) tuples
+        Retrieve top-k similar models from a database using continuous hashes
         """
         # Compute query hash
         query_hash = self.compute_hash(query_point_cloud)
@@ -183,5 +168,27 @@ class HashingInference:
         # Sort by similarity (descending)
         similarities.sort(key=lambda x: x[1], reverse=True)
 
-        # Return top-k
-        return similarities[:top_k]
+        return similarities
+    
+    def compute_continuous_hash(self, point_cloud):
+        """Compute continuous hash code (-1 to 1 range) for a point cloud"""
+        # Preprocess point cloud
+        processed_pc = normalize_point_cloud(point_cloud)
+        processed_pc = np.expand_dims(processed_pc, axis=0)
+        
+        # Get model output
+        dummy_pc = np.zeros_like(processed_pc)  # Create dummy pair
+        model_output = self.model.predict([processed_pc, dummy_pc], verbose=0)
+        
+        # Return first half of output
+        return model_output[0, :HASH_BIT_SIZE]
+    
+    def compute_continuous_similarity(self, hash1, hash2):
+        """Compute similarity between two continuous hash codes"""
+        # Cosine similarity
+        norm1 = np.linalg.norm(hash1)
+        norm2 = np.linalg.norm(hash2)
+        if norm1 == 0 or norm2 == 0:
+            return 0.0
+        similarity = np.dot(hash1, hash2) / (norm1 * norm2)
+        return similarity

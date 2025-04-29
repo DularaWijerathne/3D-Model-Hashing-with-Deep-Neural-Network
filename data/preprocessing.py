@@ -111,6 +111,41 @@ def prepare_data_for_training(pairs, augment=True):
     """
     # Normalize point clouds
     normalized_pairs = []
+    rot_inv_pairs = [] # for rotation invariant test
+
+    for point_clouds, label in pairs:
+        pc1 = normalize_point_cloud(point_clouds[0])
+        pc2 = normalize_point_cloud(point_clouds[1])
+
+        rot_inv_pairs.append(([pc1, pc2], label))
+
+        pc1_aug = pc1
+        pc2_aug = pc2
+
+        # Apply augmentation if enabled
+        if augment:
+            if np.random.random() < 0.5:  # 50% chance to augment
+                pc1_aug = augment_point_cloud(pc1)
+            if np.random.random() < 0.5:  # 50% chance to augment
+                pc2_aug = augment_point_cloud(pc2)
+
+        normalized_pairs.append(([pc1_aug, pc2_aug], label))
+        
+    # Split into train and validation sets
+    train_pairs, val_pairs = train_test_split(
+        normalized_pairs, test_size=0.2, random_state=42
+    )
+
+    return train_pairs, val_pairs, rot_inv_pairs[:100]
+
+
+def prepare_data_for_testing(pairs, augment=True):
+    """
+    Convert the list of pairs to format suitable for model testing
+    with optional data augmentation
+    """
+    # Normalize point clouds
+    normalized_pairs = []
     for point_clouds, label in pairs:
         pc1 = normalize_point_cloud(point_clouds[0])
         pc2 = normalize_point_cloud(point_clouds[1])
@@ -124,9 +159,4 @@ def prepare_data_for_training(pairs, augment=True):
 
         normalized_pairs.append(([pc1, pc2], label))
 
-    # Split into train and validation sets
-    train_pairs, val_pairs = train_test_split(
-        normalized_pairs, test_size=0.2, random_state=42
-    )
-
-    return train_pairs, val_pairs
+    return normalized_pairs
