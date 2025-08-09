@@ -20,10 +20,13 @@ JITTER_SIGMA = 0.01  # Standard deviation for point jitter in augmentation
 BALANCE_WEIGHT = 0.05  # Weight for bit balance constraint
 INDEPENDENCE_WEIGHT = 0.05  # Weight for bit independence constraint
 QUANTIZATION_WEIGHT = 0.2  # Weight for quantization loss
-MARGIN = 0.2  # Margin for contrastive loss
+MARGIN = 0.3  # Margin for contrastive loss
 
 # Evaluation parameters
 RETRIEVAL_K = 100  # Top-k for precision and recall computation
 
 # Thresholders
 SIMILARITY_THRESHOLD = 0.92
+
+# Supported file formats
+SUPPORTED_FORMATS = ('.obj', '.ply', '.stl', '.off', '.glb', '.fbx')

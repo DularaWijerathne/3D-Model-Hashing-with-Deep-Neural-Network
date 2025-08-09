@@ -31,10 +31,7 @@ def self_attention_module(x, num_heads=4):
 
 
 def create_point_cloud_feature_extractor():
-    """
-    Create a PointNet-inspired feature extractor for point clouds
-    with added self-attention mechanisms
-    """
+
     # Input layer
     inputs = keras.Input(shape=(POINT_CLOUD_SIZE, POINT_FEATURES))
 
