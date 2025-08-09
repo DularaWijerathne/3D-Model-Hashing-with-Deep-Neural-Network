@@ -130,7 +130,11 @@ class HashingInference:
         with tf.device(device):
             # Get model output
             dummy_pc = np.zeros_like(processed_pc)  # Create dummy pair
-            model_output = self.model.predict([{'point_cloud_a':processed_pc, 'point_cloud_b':dummy_pc}], verbose=0)
+            input = {
+                "point_cloud_a": tf.convert_to_tensor(processed_pc, dtype=tf.float32),
+                "point_cloud_b": tf.convert_to_tensor(dummy_pc, dtype=tf.float32)
+            }
+            model_output = self.model.predict(input, verbose=0)
             
             # Get first half of output (hash for input point cloud)
             continuous_hash = model_output[0, :HASH_BIT_SIZE]
@@ -141,23 +145,26 @@ class HashingInference:
         return binary_hash
 
     def compute_similarity(self, hash1, hash2):
-        """Compute similarity between two binary hash codes"""
-        if hash1.shape != hash2.shape:
-            raise ValueError("Arrays must have the same shape")
-        similarity = np.mean(hash1 == hash2)
+        """Compute similarity between two continuous hash codes"""
+        # Cosine similarity
+        norm1 = np.linalg.norm(hash1)
+        norm2 = np.linalg.norm(hash2)
+        if norm1 == 0 or norm2 == 0:
+            return 0.0
+        similarity = np.dot(hash1, hash2) / (norm1 * norm2)
         return similarity
 
-    def retrieve_similar_models(self, query_point_cloud, database_point_clouds):
+    def retrieve_similar_models(self, query_point_cloud, database_point_clouds, top_k=10):
         """
         Retrieve top-k similar models from a database using continuous hashes
         """
         # Compute query hash
-        query_hash = self.compute_hash(query_point_cloud)
+        query_hash = self.compute_continuous_hash(query_point_cloud)
 
         # Compute hash codes for database
         database_hashes = {}
         for name, pc in database_point_clouds.items():
-            database_hashes[name] = self.compute_hash(pc)
+            database_hashes[name] = self.compute_continuous_hash(pc)
 
         # Compute similarities
         similarities = []
@@ -168,7 +175,8 @@ class HashingInference:
         # Sort by similarity (descending)
         similarities.sort(key=lambda x: x[1], reverse=True)
 
-        return similarities
+        # Return top-k
+        return similarities[:top_k]
     
     def compute_continuous_hash(self, point_cloud):
         """Compute continuous hash code (-1 to 1 range) for a point cloud"""
@@ -178,17 +186,11 @@ class HashingInference:
         
         # Get model output
         dummy_pc = np.zeros_like(processed_pc)  # Create dummy pair
-        model_output = self.model.predict([processed_pc, dummy_pc], verbose=0)
+        input = {
+            "point_cloud_a": tf.convert_to_tensor(processed_pc, dtype=tf.float32),
+            "point_cloud_b": tf.convert_to_tensor(dummy_pc, dtype=tf.float32)
+        }
+        model_output = self.model.predict(input, verbose=0)
         
         # Return first half of output
         return model_output[0, :HASH_BIT_SIZE]
-    
-    def compute_continuous_similarity(self, hash1, hash2):
-        """Compute similarity between two continuous hash codes"""
-        # Cosine similarity
-        norm1 = np.linalg.norm(hash1)
-        norm2 = np.linalg.norm(hash2)
-        if norm1 == 0 or norm2 == 0:
-            return 0.0
-        similarity = np.dot(hash1, hash2) / (norm1 * norm2)
-        return similarity
