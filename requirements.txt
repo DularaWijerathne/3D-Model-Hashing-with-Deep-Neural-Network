@@ -1,0 +1,7 @@
+numpy
+pandas
+matplotlib
+scikit-learn
+trimesh
+pyntcloud
+tensorflow[and-cuda]
